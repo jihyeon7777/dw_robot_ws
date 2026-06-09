@@ -1,0 +1,35 @@
+rf_arduino_node:
+  ros__parameters:
+    port: "/dev/ttyACM0"
+    baudrate: 115200
+    read_timeout: 0.05
+
+    output_topic: "/cmd_vel_rf"
+    brake_topic: "/brake_cmd"
+    publish_rate: 50.0
+
+    max_linear_velocity: 5.76
+    max_angular_velocity: 29.54
+
+    throttle_center: 1506
+    throttle_min: 1280
+    throttle_max: 1732
+
+    steering_center: 1496
+    steering_min: 1257
+    steering_max: 1737
+
+    deadzone_us: 40
+
+    invert_throttle: false
+    invert_steering: false
+
+    enable_required: true
+    enable_threshold: 1500
+    enable_active_high: true
+
+    brake_threshold: 1500
+    brake_active_high: false
+    brake_on_signal_loss: true
+
+    serial_timeout_sec: 0.3

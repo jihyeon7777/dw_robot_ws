@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+
+import math
+import serial
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Int16MultiArray
+from std_msgs.msg import Bool
+
+
+class Pnt50DriverNode(Node):
+    def __init__(self):
+        super().__init__('pnt50_driver_node')
+
+        self.declare_parameter('wheel_cmd_topic', '/wheel_cmd')
+        self.declare_parameter('brake_topic', '/brake_cmd')
+
+        self.declare_parameter('port', '/dev/ttyUSB0')
+        self.declare_parameter('baudrate', 19200)
+        self.declare_parameter('slave_id', 1)
+
+        self.declare_parameter('max_rpm', 500)
+
+        self.declare_parameter('left_is_motor1', True)
+        self.declare_parameter('left_sign', 1)
+        self.declare_parameter('right_sign', 1)
+
+        self.declare_parameter('cmd_timeout', 0.5)
+        self.declare_parameter('send_rate', 20.0)
+
+        self.declare_parameter('use_dual_pid207', True)
+
+        self.wheel_cmd_topic = self.get_parameter('wheel_cmd_topic').value
+        self.brake_topic = self.get_parameter('brake_topic').value
+
+        self.port = self.get_parameter('port').value
+        self.baudrate = int(self.get_parameter('baudrate').value)
+        self.slave_id = int(self.get_parameter('slave_id').value)
+
+        self.max_rpm = int(self.get_parameter('max_rpm').value)
+
+        self.left_is_motor1 = bool(self.get_parameter('left_is_motor1').value)
+        self.left_sign = int(self.get_parameter('left_sign').value)
+        self.right_sign = int(self.get_parameter('right_sign').value)
+
+        self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
+        self.send_rate = float(self.get_parameter('send_rate').value)
+
+        self.use_dual_pid207 = bool(self.get_parameter('use_dual_pid207').value)
+
+        self.serial_port = None
+
+        self.last_left_norm = 0.0
+        self.last_right_norm = 0.0
+        self.last_cmd_time = None
+
+        self.brake_requested = False
+        self.brake_command_sent = False
+
+        self.target_rpm_pub = self.create_publisher(
+            Int16MultiArray,
+            '/pnt50/target_rpm',
+            10
+        )
+
+        self.comm_ok_pub = self.create_publisher(
+            Bool,
+            '/pnt50/comm_ok',
+            10
+        )
+
+        self.wheel_cmd_sub = self.create_subscription(
+            Float32MultiArray,
+            self.wheel_cmd_topic,
+            self.wheel_cmd_callback,
+            10
+        )
+
+        self.brake_sub = self.create_subscription(
+            Bool,
+            self.brake_topic,
+            self.brake_callback,
+            10
+        )
+
+        self.open_serial()
+
+        self.timer = self.create_timer(
+            1.0 / self.send_rate,
+            self.timer_callback
+        )
+
+        self.get_logger().info('pnt50_driver_node started')
+        self.get_logger().info(f'wheel_cmd_topic: {self.wheel_cmd_topic}')
+        self.get_logger().info(f'brake_topic: {self.brake_topic}')
+        self.get_logger().info(f'port: {self.port}')
+        self.get_logger().info(f'baudrate: {self.baudrate}')
+        self.get_logger().info(f'slave_id: {self.slave_id}')
+        self.get_logger().info(f'max_rpm: {self.max_rpm}')
+        self.get_logger().info(f'use_dual_pid207: {self.use_dual_pid207}')
+
+    def open_serial(self):
+        try:
+            self.serial_port = serial.Serial(
+                port=self.port,
+                baudrate=self.baudrate,
+                bytesize=8,
+                parity=serial.PARITY_NONE,
+                stopbits=1,
+                timeout=0.05,
+                write_timeout=0.05
+            )
+            self.get_logger().info(f'Serial opened: {self.port}')
+
+        except serial.SerialException as e:
+            self.serial_port = None
+            self.get_logger().error(f'Failed to open serial port {self.port}: {e}')
+
+    def wheel_cmd_callback(self, msg):
+        if len(msg.data) < 4:
+            self.get_logger().warn('Invalid /wheel_cmd length')
+            return
+
+        left_norm = float(msg.data[2])
+        right_norm = float(msg.data[3])
+
+        if not math.isfinite(left_norm) or not math.isfinite(right_norm):
+            self.get_logger().warn('Invalid wheel command ignored')
+            return
+
+        self.last_left_norm = self.clamp(left_norm, -1.0, 1.0)
+        self.last_right_norm = self.clamp(right_norm, -1.0, 1.0)
+        self.last_cmd_time = self.get_clock().now()
+
+    def brake_callback(self, msg):
+        previous_state = self.brake_requested
+        self.brake_requested = bool(msg.data)
+
+        if self.brake_requested and not previous_state:
+            self.brake_command_sent = False
+            self.get_logger().warn('Brake requested')
+
+        elif not self.brake_requested and previous_state:
+            self.brake_command_sent = False
+            self.get_logger().info('Brake released')
+
+    def timer_callback(self):
+        motor1_rpm, motor2_rpm = self.get_target_rpms()
+
+        self.publish_target_rpm(motor1_rpm, motor2_rpm)
+
+        if self.serial_port is None:
+            self.publish_comm_ok(False)
+            return
+
+        if self.brake_requested:
+            zero_ok = self.send_zero_rpm_command()
+
+            if not self.brake_command_sent:
+                brake_ok = self.write_pnt_brake_pid175(
+                    motor1_brake=True,
+                    motor2_brake=True
+                )
+
+                if brake_ok:
+                    self.brake_command_sent = True
+                    self.get_logger().warn('PID 175 PNT electric brake sent')
+
+                self.publish_comm_ok(zero_ok and brake_ok)
+
+            else:
+                self.publish_comm_ok(zero_ok)
+
+            return
+
+        if self.use_dual_pid207:
+            ok = self.write_dual_rpm_pid207(motor1_rpm, motor2_rpm)
+        else:
+            ok1 = self.write_single_word(130, motor1_rpm)
+            ok2 = self.write_single_word(131, motor2_rpm)
+            ok = ok1 and ok2
+
+        self.publish_comm_ok(ok)
+
+    def get_target_rpms(self):
+        if self.is_timed_out() or self.brake_requested:
+            left_rpm = 0
+            right_rpm = 0
+        else:
+            left_rpm = int(self.last_left_norm * self.max_rpm * self.left_sign)
+            right_rpm = int(self.last_right_norm * self.max_rpm * self.right_sign)
+
+        if self.left_is_motor1:
+            motor1_rpm = left_rpm
+            motor2_rpm = right_rpm
+        else:
+            motor1_rpm = right_rpm
+            motor2_rpm = left_rpm
+
+        motor1_rpm = self.clamp_int16(motor1_rpm)
+        motor2_rpm = self.clamp_int16(motor2_rpm)
+
+        return motor1_rpm, motor2_rpm
+
+    def is_timed_out(self):
+        if self.last_cmd_time is None:
+            return True
+
+        now = self.get_clock().now()
+        age = (now - self.last_cmd_time).nanoseconds * 1e-9
+
+        return age > self.cmd_timeout
+
+    def send_zero_rpm_command(self):
+        if self.use_dual_pid207:
+            return self.write_dual_rpm_pid207(0, 0)
+
+        ok1 = self.write_single_word(130, 0)
+        ok2 = self.write_single_word(131, 0)
+        return ok1 and ok2
+
+    def write_pnt_brake_pid175(self, motor1_brake=True, motor2_brake=True):
+        """
+        PID 175: PID_PNT_BRAKE
+
+        DL = 1: brake motor1
+        DH = 1: brake motor2
+
+        Both motors brake:
+        DATA = 0x0101
+        """
+
+        pid = 175
+
+        dl = 1 if motor1_brake else 0
+        dh = 1 if motor2_brake else 0
+
+        data = (dh << 8) | dl
+
+        return self.write_single_word(pid, data)
+
+    def write_dual_rpm_pid207(self, motor1_rpm, motor2_rpm):
+        pid = 207
+        quantity = 2
+        byte_count = 4
+
+        payload = bytearray()
+        payload.append(self.slave_id)
+        payload.append(0x10)
+        payload += pid.to_bytes(2, byteorder='big', signed=False)
+        payload += quantity.to_bytes(2, byteorder='big', signed=False)
+        payload.append(byte_count)
+        payload += int(motor1_rpm).to_bytes(2, byteorder='big', signed=True)
+        payload += int(motor2_rpm).to_bytes(2, byteorder='big', signed=True)
+
+        frame = self.add_crc(payload)
+
+        try:
+            self.serial_port.reset_input_buffer()
+            self.serial_port.write(frame)
+            response = self.serial_port.read(8)
+
+            if len(response) < 8:
+                return False
+
+            expected_prefix = bytes([
+                self.slave_id,
+                0x10,
+                0x00,
+                0xCF,
+                0x00,
+                0x02
+            ])
+
+            if response[:6] != expected_prefix:
+                return False
+
+            return self.check_crc(response)
+
+        except serial.SerialException as e:
+            self.get_logger().error(f'Modbus serial error: {e}')
+            self.serial_port = None
+            return False
+
+    def write_single_word(self, pid, value):
+        payload = bytearray()
+        payload.append(self.slave_id)
+        payload.append(0x06)
+        payload += int(pid).to_bytes(2, byteorder='big', signed=False)
+        payload += int(value).to_bytes(2, byteorder='big', signed=True)
+
+        frame = self.add_crc(payload)
+
+        try:
+            self.serial_port.reset_input_buffer()
+            self.serial_port.write(frame)
+            response = self.serial_port.read(8)
+
+            if len(response) < 8:
+                return False
+
+            if response[:6] != frame[:6]:
+                return False
+
+            return self.check_crc(response)
+
+        except serial.SerialException as e:
+            self.get_logger().error(f'Modbus serial error: {e}')
+            self.serial_port = None
+            return False
+
+    def add_crc(self, payload):
+        crc = self.modbus_crc16(payload)
+        frame = bytearray(payload)
+        frame += crc.to_bytes(2, byteorder='little')
+        return bytes(frame)
+
+    def check_crc(self, frame):
+        if len(frame) < 3:
+            return False
+
+        data = frame[:-2]
+        received_crc = int.from_bytes(frame[-2:], byteorder='little')
+        calculated_crc = self.modbus_crc16(data)
+
+        return received_crc == calculated_crc
+
+    def modbus_crc16(self, data):
+        crc = 0xFFFF
+
+        for byte in data:
+            crc ^= byte
+
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+
+        return crc & 0xFFFF
+
+    def publish_target_rpm(self, motor1_rpm, motor2_rpm):
+        msg = Int16MultiArray()
+        msg.data = [int(motor1_rpm), int(motor2_rpm)]
+        self.target_rpm_pub.publish(msg)
+
+    def publish_comm_ok(self, ok):
+        msg = Bool()
+        msg.data = bool(ok)
+        self.comm_ok_pub.publish(msg)
+
+    def send_zero_rpm(self):
+        if self.serial_port is None:
+            return
+
+        self.send_zero_rpm_command()
+
+    def clamp(self, value, min_value, max_value):
+        return max(min_value, min(max_value, value))
+
+    def clamp_int16(self, value):
+        return int(max(-32768, min(32767, value)))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = Pnt50DriverNode()
+
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.send_zero_rpm()
+
+        if node.serial_port is not None:
+            node.serial_port.close()
+
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

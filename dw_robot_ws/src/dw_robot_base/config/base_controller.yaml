@@ -1,0 +1,21 @@
+base_controller_node:
+  ros__parameters:
+    cmd_vel_topic: "/cmd_vel_safe"
+    wheel_cmd_topic: "/wheel_cmd"
+    brake_topic: "/brake_cmd"
+
+    wheel_separation: 0.39
+    max_wheel_velocity: 5.76
+
+    cmd_timeout: 0.5
+    publish_rate: 30.0
+
+    output_mode: "topic"
+
+    serial_port: "/dev/ttyACM0"
+    baudrate: 115200
+
+    use_brake_protocol: false
+    brake_on_timeout: false
+    brake_on_zero_cmd: false
+    brake_deadband: 0.02

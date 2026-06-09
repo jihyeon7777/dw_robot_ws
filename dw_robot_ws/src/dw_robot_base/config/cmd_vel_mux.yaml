@@ -1,0 +1,12 @@
+cmd_vel_mux_node:
+  ros__parameters:
+    input_source: "keyboard"
+
+    keyboard_topic: "/cmd_vel_keyboard"
+    rf_topic: "/cmd_vel_rf"
+    output_topic: "/cmd_vel_raw"
+
+    keyboard_timeout: 0.5
+    rf_timeout: 0.5
+
+    publish_rate: 30.0
