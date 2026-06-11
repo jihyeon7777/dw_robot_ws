@@ -63,6 +63,14 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Arduino UNO R4 WiFi Serial reader
+    # Serial format:
+    # throttle,steering,enable,brake,signal_ok,pulse1,pulse2,rpm1,rpm2
+    #
+    # Publishes:
+    # /cmd_vel_rf
+    # /brake_cmd
+    # /pnt50_feedback
     rf_arduino_node = Node(
         package='dw_robot_base',
         executable='rf_arduino_node',

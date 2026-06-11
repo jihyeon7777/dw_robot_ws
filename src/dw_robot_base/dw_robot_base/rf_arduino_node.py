@@ -7,6 +7,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
+from std_msgs.msg import Float32MultiArray
 
 
 class RfArduinoNode(Node):
@@ -19,6 +20,9 @@ class RfArduinoNode(Node):
 
         self.declare_parameter('output_topic', '/cmd_vel_rf')
         self.declare_parameter('brake_topic', '/brake_cmd')
+        self.declare_parameter('pnt50_feedback_topic', '/pnt50_feedback')
+        self.declare_parameter('publish_pnt50_feedback', True)
+
         self.declare_parameter('publish_rate', 50.0)
 
         self.declare_parameter('max_linear_velocity', 0.10)
@@ -53,6 +57,9 @@ class RfArduinoNode(Node):
 
         self.output_topic = self.get_parameter('output_topic').value
         self.brake_topic = self.get_parameter('brake_topic').value
+        self.pnt50_feedback_topic = self.get_parameter('pnt50_feedback_topic').value
+        self.publish_pnt50_feedback = bool(self.get_parameter('publish_pnt50_feedback').value)
+
         self.publish_rate = float(self.get_parameter('publish_rate').value)
 
         self.max_linear_velocity = float(self.get_parameter('max_linear_velocity').value)
@@ -97,6 +104,12 @@ class RfArduinoNode(Node):
             10
         )
 
+        self.pnt50_feedback_pub = self.create_publisher(
+            Float32MultiArray,
+            self.pnt50_feedback_topic,
+            10
+        )
+
         self.open_serial()
 
         timer_period = 1.0 / self.publish_rate
@@ -107,6 +120,11 @@ class RfArduinoNode(Node):
         self.get_logger().info(f'baudrate: {self.baudrate}')
         self.get_logger().info(f'output_topic: {self.output_topic}')
         self.get_logger().info(f'brake_topic: {self.brake_topic}')
+        self.get_logger().info(f'pnt50_feedback_topic: {self.pnt50_feedback_topic}')
+        self.get_logger().info(
+            'Expected serial format: '
+            'throttle,steering,enable,brake,signal_ok,pulse1,pulse2,rpm1,rpm2'
+        )
 
     def open_serial(self):
         try:
@@ -141,9 +159,26 @@ class RfArduinoNode(Node):
                 self.publish_zero()
                 return
 
-            throttle_us, steering_us, enable_us, brake_us, signal_ok = parsed
+            (
+                throttle_us,
+                steering_us,
+                enable_us,
+                brake_us,
+                signal_ok,
+                pulse1,
+                pulse2,
+                rpm1,
+                rpm2,
+            ) = parsed
 
             self.last_serial_time = self.get_clock().now()
+
+            self.publish_pnt50_feedback_msg(
+                pulse1=pulse1,
+                pulse2=pulse2,
+                rpm1=rpm1,
+                rpm2=rpm2
+            )
 
             if signal_ok == 0:
                 self.publish_zero()
@@ -212,14 +247,61 @@ class RfArduinoNode(Node):
     def parse_line(self, line):
         parts = line.split(',')
 
-        if len(parts) == 5:
+        if len(parts) == 9:
             try:
-                throttle_us = int(parts[0])
-                steering_us = int(parts[1])
-                enable_us = int(parts[2])
-                brake_us = int(parts[3])
-                signal_ok = int(parts[4])
-                return throttle_us, steering_us, enable_us, brake_us, signal_ok
+                throttle_us = int(float(parts[0]))
+                steering_us = int(float(parts[1]))
+                enable_us = int(float(parts[2]))
+                brake_us = int(float(parts[3]))
+                signal_ok = int(float(parts[4]))
+
+                pulse1 = float(parts[5])
+                pulse2 = float(parts[6])
+                rpm1 = float(parts[7])
+                rpm2 = float(parts[8])
+
+                return (
+                    throttle_us,
+                    steering_us,
+                    enable_us,
+                    brake_us,
+                    signal_ok,
+                    pulse1,
+                    pulse2,
+                    rpm1,
+                    rpm2,
+                )
+
+            except ValueError:
+                self.get_logger().warn(f'Invalid value in serial line: {line}')
+                return None
+
+        if len(parts) == 5:
+            # Backward compatibility:
+            # throttle,steering,enable,brake,signal_ok
+            try:
+                throttle_us = int(float(parts[0]))
+                steering_us = int(float(parts[1]))
+                enable_us = int(float(parts[2]))
+                brake_us = int(float(parts[3]))
+                signal_ok = int(float(parts[4]))
+
+                pulse1 = 0.0
+                pulse2 = 0.0
+                rpm1 = 0.0
+                rpm2 = 0.0
+
+                return (
+                    throttle_us,
+                    steering_us,
+                    enable_us,
+                    brake_us,
+                    signal_ok,
+                    pulse1,
+                    pulse2,
+                    rpm1,
+                    rpm2,
+                )
 
             except ValueError:
                 self.get_logger().warn(f'Invalid integer in serial line: {line}')
@@ -229,12 +311,28 @@ class RfArduinoNode(Node):
             # Backward compatibility:
             # throttle,steering,enable,signal_ok
             try:
-                throttle_us = int(parts[0])
-                steering_us = int(parts[1])
-                enable_us = int(parts[2])
+                throttle_us = int(float(parts[0]))
+                steering_us = int(float(parts[1]))
+                enable_us = int(float(parts[2]))
                 brake_us = 1000
-                signal_ok = int(parts[3])
-                return throttle_us, steering_us, enable_us, brake_us, signal_ok
+                signal_ok = int(float(parts[3]))
+
+                pulse1 = 0.0
+                pulse2 = 0.0
+                rpm1 = 0.0
+                rpm2 = 0.0
+
+                return (
+                    throttle_us,
+                    steering_us,
+                    enable_us,
+                    brake_us,
+                    signal_ok,
+                    pulse1,
+                    pulse2,
+                    rpm1,
+                    rpm2,
+                )
 
             except ValueError:
                 self.get_logger().warn(f'Invalid integer in serial line: {line}')
@@ -242,6 +340,20 @@ class RfArduinoNode(Node):
 
         self.get_logger().warn(f'Invalid serial line: {line}')
         return None
+
+    def publish_pnt50_feedback_msg(self, pulse1, pulse2, rpm1, rpm2):
+        if not self.publish_pnt50_feedback:
+            return
+
+        msg = Float32MultiArray()
+        msg.data = [
+            float(pulse1),
+            float(pulse2),
+            float(rpm1),
+            float(rpm2),
+        ]
+
+        self.pnt50_feedback_pub.publish(msg)
 
     def normalize_pwm(self, value, center, min_value, max_value, deadzone):
         if value <= 0:
