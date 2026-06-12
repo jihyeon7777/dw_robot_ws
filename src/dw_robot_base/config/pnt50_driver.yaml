@@ -10,7 +10,7 @@ pnt50_driver_node:
     max_rpm: 500
 
     left_is_motor1: true
-    left_sign: 0
+    left_sign: -1
     right_sign: 1
 
     cmd_timeout: 0.5
