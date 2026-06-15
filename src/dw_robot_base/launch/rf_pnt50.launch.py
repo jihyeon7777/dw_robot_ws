@@ -114,6 +114,23 @@ def generate_launch_description():
         parameters=[pnt50_config_file]
     )
 
+    usb_camera_node = Node(
+        package='dw_robot_base',
+        executable='usb_camera_node',
+        name='usb_camera_node',
+        output='screen',
+        parameters=[
+            {
+                'camera_index': 0,
+                'frame_id': 'usb_camera_optical_frame',
+                'image_topic': '/usb_camera/image_raw',
+                'width': 320,
+                'height': 240,
+                'fps': 5.0,
+            }
+        ],
+    )
+
     return LaunchDescription([
         robot_state_publisher_node,
         joint_state_publisher_node,
@@ -122,4 +139,5 @@ def generate_launch_description():
         cmd_vel_safety_node,
         base_controller_node,
         pnt50_driver_node,
+        usb_camera_node,
     ])
