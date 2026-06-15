@@ -18,6 +18,12 @@ setup(
 
         (os.path.join('share', package_name, 'config'),
             glob('config/*.yaml')),
+        
+        (os.path.join('share', package_name, 'urdf'), 
+            glob(os.path.join('urdf', '*.xacro'))),
+
+        (os.path.join('share', package_name, 'rviz'),
+            glob(os.path.join('rviz', '*.rviz'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

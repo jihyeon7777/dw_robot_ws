@@ -1,0 +1,162 @@
+<?xml version="1.0"?>
+<robot name="rf_pnt50_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ========================= -->
+  <!-- Robot size parameters -->
+  <!-- ========================= -->
+
+  <xacro:property name="base_length" value="0.60"/>
+  <xacro:property name="base_width"  value="0.42"/>
+  <xacro:property name="base_height" value="0.16"/>
+
+  <xacro:property name="wheel_radius" value="0.075"/>
+  <xacro:property name="wheel_width"  value="0.045"/>
+
+  <xacro:property name="front_wheel_x" value="0.20"/>
+  <xacro:property name="rear_wheel_x"  value="-0.20"/>
+  <xacro:property name="wheel_y"       value="0.24"/>
+  <xacro:property name="wheel_z"       value="0.075"/>
+
+  <!-- ========================= -->
+  <!-- base_link -->
+  <!-- ========================= -->
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 ${base_height / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="body_gray">
+        <color rgba="0.45 0.45 0.45 1.0"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 ${base_height / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <origin xyz="0 0 ${base_height / 2.0}" rpy="0 0 0"/>
+      <mass value="20.0"/>
+      <inertia
+        ixx="1.0" ixy="0.0" ixz="0.0"
+        iyy="1.0" iyz="0.0"
+        izz="1.0"/>
+    </inertial>
+  </link>
+
+  <!-- ========================= -->
+  <!-- left front wheel -->
+  <!-- ========================= -->
+
+  <link name="left_front_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="wheel_black">
+        <color rgba="0.02 0.02 0.02 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="left_front_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="left_front_wheel_link"/>
+    <origin xyz="${front_wheel_x} ${wheel_y} ${wheel_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========================= -->
+  <!-- left rear wheel -->
+  <!-- ========================= -->
+
+  <link name="left_rear_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="wheel_black">
+        <color rgba="0.02 0.02 0.02 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="left_rear_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="left_rear_wheel_link"/>
+    <origin xyz="${rear_wheel_x} ${wheel_y} ${wheel_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========================= -->
+  <!-- right front wheel -->
+  <!-- ========================= -->
+
+  <link name="right_front_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="wheel_black">
+        <color rgba="0.02 0.02 0.02 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="right_front_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="right_front_wheel_link"/>
+    <origin xyz="${front_wheel_x} ${-wheel_y} ${wheel_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========================= -->
+  <!-- right rear wheel -->
+  <!-- ========================= -->
+
+  <link name="right_rear_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="wheel_black">
+        <color rgba="0.02 0.02 0.02 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="right_rear_wheel_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="right_rear_wheel_link"/>
+    <origin xyz="${rear_wheel_x} ${-wheel_y} ${wheel_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========================= -->
+  <!-- imu_link -->
+  <!-- ========================= -->
+
+  <link name="imu_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.04 0.015"/>
+      </geometry>
+      <material name="imu_blue">
+        <color rgba="0.0 0.2 1.0 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0.10 0.00 0.18" rpy="0 0 0"/>
+  </joint>
+
+</robot>
