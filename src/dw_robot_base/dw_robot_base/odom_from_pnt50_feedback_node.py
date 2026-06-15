@@ -3,7 +3,7 @@ import math
 import rclpy
 from rclpy.node import Node
 
-from std_msgs.msg import Int64MultiArray
+from std_msgs.msg import Float32MultiArray
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
@@ -64,7 +64,7 @@ class OdomFromPnt50FeedbackNode(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.sub = self.create_subscription(
-            Int64MultiArray,
+            Float32MultiArray,
             self.feedback_topic,
             self.feedback_callback,
             10
@@ -76,7 +76,7 @@ class OdomFromPnt50FeedbackNode(Node):
         self.get_logger().info(f'wheel_separation: {self.wheel_separation}')
         self.get_logger().info(f'ticks_per_wheel_rev: {self.ticks_per_wheel_rev}')
 
-    def feedback_callback(self, msg: Int64MultiArray):
+    def feedback_callback(self, msg: Float32MultiArray):
         if len(msg.data) < 2:
             self.get_logger().warn('/pnt50_feedback must contain [left_ticks, right_ticks]')
             return
