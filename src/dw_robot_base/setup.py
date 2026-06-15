@@ -42,6 +42,7 @@ setup(
             'pnt50_driver_node = dw_robot_base.pnt50_driver_node:main',
             'keyboard_brake_node = dw_robot_base.keyboard_brake_node:main',
             'usb_camera_node = dw_robot_base.usb_camera_node:main',
+            'odom_from_pnt50_feedback_node = dw_robot_base.odom_from_pnt50_feedback_node:main',
         ],
     },
 )
