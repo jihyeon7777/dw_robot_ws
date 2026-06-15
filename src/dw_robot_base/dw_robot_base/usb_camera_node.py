@@ -33,7 +33,7 @@ class UsbCameraNode(Node):
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=5,
+            depth=1,
         )
 
         self.image_pub = self.create_publisher(Image, self.image_topic, qos)
@@ -45,6 +45,7 @@ class UsbCameraNode(Node):
             raise RuntimeError('USB camera open failed')
 
         # 네 카메라는 MJPG에서 640x480 30fps, 1280x720 30fps, 1920x1080 30fps 지원함
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
