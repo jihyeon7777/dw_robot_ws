@@ -71,9 +71,6 @@ rf_arduino_node       ─┘   (/cmd_vel_raw)      (/cmd_vel_safe)
   때는 보드로 단순 ASCII 시리얼 명령(`M,<l>,<r>`, `S`, `B,1`/`B,0`)도 직접 전송한다. 자체 브레이크
   상태 머신(`use_brake_protocol`, `brake_on_timeout`, `brake_on_zero_cmd`)을 가지고 있으며 이는
   `pnt50_driver_node`의 브레이크 처리와는 독립적이다.
-- **`fake_diff_drive_node`**: 실제 베이스를 대신하는 시뮬레이션용 노드. `/cmd_vel_safe`를 직접
-  적분하여 `/odom`, `/tf`, `/joint_states`를 만든다(`/wheel_cmd`는 거치지 않음). `*_fake*` launch
-  파일에서 실제 모터 스택 대신 사용된다.
 - **`pnt50_driver_node`**: `/wheel_cmd`를 받아 정규화된 바퀴 속도를 RPM으로 변환하고, 시리얼을 통해
   듀얼 MDROBOT/PNT50 모터 컨트롤러에 Modbus RTU(함수 코드 0x06/0x10, CRC16)로 통신한다. 모니터링용으로
   `/pnt50/target_rpm`, `/pnt50/comm_ok`를 publish한다. PID 175(전기 브레이크)를 이용한 자체 브레이크
@@ -111,8 +108,6 @@ rf_arduino_node       ─┘   (/cmd_vel_raw)      (/cmd_vel_safe)
 실제 사용 중인 하드웨어 조합에 맞는 launch 파일을 골라야 한다. 각 파일은 특정 노드 조합을 연결하며,
 서로 단순한 상위/하위 집합 관계가 아니다.
 
-- `keyboard_fake.launch.py` / `rf_fake.launch.py`: 텔레옵 → mux → safety → **fake** diff drive
-  (실제 모터 없는 시뮬레이션) + RViz.
 - `keyboard_real.launch.py` / `keyboard_pnt50.launch.py` / `rf_pnt50.launch.py`: 텔레옵 → mux →
   safety → `base_controller_node`(`_pnt50` 변형에서는 `pnt50_driver_node`도 포함) — **실제** 하드웨어
   대상.
