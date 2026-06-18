@@ -9,7 +9,15 @@ rf_arduino_node:
     publish_rate: 50.0
 
     max_linear_velocity: 5.76
+    max_lateral_velocity: 5.76
     max_angular_velocity: 29.54
+
+    # CH7 모드 스위치. 아두이노 CSV 10번째 필드(ch7)가 들어오면 자동 판정.
+    # CSV에 ch7이 없으면 default_drive_mode 사용(현재 9필드 = manual 유지).
+    # 임계값은 placeholder — CH7 PWM 실측 후 확정할 것 (문서 99 TODO).
+    default_drive_mode: "manual"
+    ch7_manual_threshold: 1700
+    ch7_auto_threshold: 1300
 
     throttle_center: 1506
     throttle_min: 1280

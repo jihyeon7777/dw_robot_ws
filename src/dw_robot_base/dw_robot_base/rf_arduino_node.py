@@ -8,6 +8,23 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import String
+
+
+def decide_drive_mode(ch7_us, manual_threshold, auto_threshold, default_mode):
+    """
+    CH7 PWM으로 주행 모드를 판정한다.
+
+    CH7은 큰 값 -> 작은 값 순으로 MANUAL -> MECANUM -> AUTO (문서 02 기준).
+    ch7_us <= 0 이면 CH7 정보 없음(CSV 미포함)으로 보고 default_mode를 쓴다.
+    """
+    if ch7_us <= 0:
+        return default_mode
+    if ch7_us >= manual_threshold:
+        return 'manual'
+    if ch7_us <= auto_threshold:
+        return 'auto'
+    return 'mecanum'
 
 
 class RfArduinoNode(Node):
@@ -26,7 +43,14 @@ class RfArduinoNode(Node):
         self.declare_parameter('publish_rate', 50.0)
 
         self.declare_parameter('max_linear_velocity', 0.10)
+        self.declare_parameter('max_lateral_velocity', 0.10)
         self.declare_parameter('max_angular_velocity', 0.5)
+
+        # CH7 모드 스위치 (큰 값 -> 작은 값: MANUAL -> MECANUM -> AUTO).
+        # 임계값은 측정 전 placeholder. 실측 후 yaml에 확정할 것 (문서 99 TODO).
+        self.declare_parameter('default_drive_mode', 'manual')
+        self.declare_parameter('ch7_manual_threshold', 1700)
+        self.declare_parameter('ch7_auto_threshold', 1300)
 
         self.declare_parameter('throttle_center', 1505)
         self.declare_parameter('throttle_min', 1000)
@@ -63,7 +87,13 @@ class RfArduinoNode(Node):
         self.publish_rate = float(self.get_parameter('publish_rate').value)
 
         self.max_linear_velocity = float(self.get_parameter('max_linear_velocity').value)
+        self.max_lateral_velocity = float(self.get_parameter('max_lateral_velocity').value)
         self.max_angular_velocity = float(self.get_parameter('max_angular_velocity').value)
+
+        self.default_drive_mode = str(self.get_parameter('default_drive_mode').value)
+        self.ch7_manual_threshold = int(self.get_parameter('ch7_manual_threshold').value)
+        self.ch7_auto_threshold = int(self.get_parameter('ch7_auto_threshold').value)
+        self.last_drive_mode = None
 
         self.throttle_center = int(self.get_parameter('throttle_center').value)
         self.throttle_min = int(self.get_parameter('throttle_min').value)
@@ -107,6 +137,12 @@ class RfArduinoNode(Node):
         self.pnt50_feedback_pub = self.create_publisher(
             Float32MultiArray,
             self.pnt50_feedback_topic,
+            10
+        )
+
+        self.drive_mode_pub = self.create_publisher(
+            String,
+            '/rf_drive_mode',
             10
         )
 
@@ -169,6 +205,7 @@ class RfArduinoNode(Node):
                 pulse2,
                 rpm1,
                 rpm2,
+                ch7_us,
             ) = parsed
 
             self.last_serial_time = self.get_clock().now()
@@ -222,9 +259,27 @@ class RfArduinoNode(Node):
             if self.invert_steering:
                 steering_norm *= -1.0
 
+            mode = decide_drive_mode(
+                ch7_us,
+                self.ch7_manual_threshold,
+                self.ch7_auto_threshold,
+                self.default_drive_mode
+            )
+            self.publish_drive_mode(mode)
+
             cmd = Twist()
-            cmd.linear.x = throttle_norm * self.max_linear_velocity
-            cmd.angular.z = steering_norm * self.max_angular_velocity
+            if mode == 'mecanum':
+                # CH1 -> 전후, CH2(steering) -> 좌우 평행이동(strafe).
+                cmd.linear.x = throttle_norm * self.max_linear_velocity
+                cmd.linear.y = steering_norm * self.max_lateral_velocity
+            elif mode == 'auto':
+                # AUTO에서는 RF가 주행을 양보한다(자율 노드가 별도 토픽으로 구동).
+                # estop/brake는 위에서 이미 우선 처리됨. TODO: /cmd_vel_auto 통합.
+                pass
+            else:
+                # MANUAL: CH1 -> 전후, CH2(steering) -> yaw 회전.
+                cmd.linear.x = throttle_norm * self.max_linear_velocity
+                cmd.angular.z = steering_norm * self.max_angular_velocity
 
             if not self.is_valid_twist(cmd):
                 self.publish_zero()
@@ -246,6 +301,39 @@ class RfArduinoNode(Node):
 
     def parse_line(self, line):
         parts = line.split(',')
+
+        if len(parts) == 10:
+            # New format with CH7 mode channel:
+            # throttle,steering,enable,brake,signal_ok,pulse1,pulse2,rpm1,rpm2,ch7
+            try:
+                throttle_us = int(float(parts[0]))
+                steering_us = int(float(parts[1]))
+                enable_us = int(float(parts[2]))
+                brake_us = int(float(parts[3]))
+                signal_ok = int(float(parts[4]))
+
+                pulse1 = float(parts[5])
+                pulse2 = float(parts[6])
+                rpm1 = float(parts[7])
+                rpm2 = float(parts[8])
+                ch7_us = int(float(parts[9]))
+
+                return (
+                    throttle_us,
+                    steering_us,
+                    enable_us,
+                    brake_us,
+                    signal_ok,
+                    pulse1,
+                    pulse2,
+                    rpm1,
+                    rpm2,
+                    ch7_us,
+                )
+
+            except ValueError:
+                self.get_logger().warn(f'Invalid value in serial line: {line}')
+                return None
 
         if len(parts) == 9:
             try:
@@ -270,6 +358,7 @@ class RfArduinoNode(Node):
                     pulse2,
                     rpm1,
                     rpm2,
+                    0,
                 )
 
             except ValueError:
@@ -301,6 +390,7 @@ class RfArduinoNode(Node):
                     pulse2,
                     rpm1,
                     rpm2,
+                    0,
                 )
 
             except ValueError:
@@ -332,6 +422,7 @@ class RfArduinoNode(Node):
                     pulse2,
                     rpm1,
                     rpm2,
+                    0,
                 )
 
             except ValueError:
@@ -421,6 +512,15 @@ class RfArduinoNode(Node):
         ]
 
         return all(math.isfinite(v) for v in values)
+
+    def publish_drive_mode(self, mode):
+        msg = String()
+        msg.data = mode
+        self.drive_mode_pub.publish(msg)
+
+        if self.last_drive_mode != mode:
+            self.get_logger().info(f'Drive mode: {mode}')
+            self.last_drive_mode = mode
 
     def publish_zero(self):
         self.cmd_pub.publish(Twist())
