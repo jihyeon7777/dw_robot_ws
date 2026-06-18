@@ -115,15 +115,49 @@ class BaseControllerNode(Node):
         self.last_cmd = msg
         self.last_cmd_time = self.get_clock().now()
 
+        # Topic mode: this node is a pure Twist -> /wheel_cmd converter.
+        # Timeout/stop is owned upstream by cmd_vel_safety_node (smooth
+        # decel to zero) and downstream by the pnt50_driver_node hardware
+        # failsafe, so we just forward each fresh command immediately.
+        if self.output_mode != 'serial':
+            self.compute_and_publish(self.last_cmd)
+
     def brake_callback(self, msg):
         self.external_brake_requested = bool(msg.data)
+
+        # Topic mode: the electric brake is owned by pnt50_driver_node, so we
+        # do not act on /brake_cmd here (avoids duplicated brake/stop logic).
+        if self.output_mode != 'serial':
+            return
 
         if self.external_brake_requested:
             self.get_logger().warn('External brake requested')
         else:
             self.get_logger().info('External brake released')
 
+    def compute_and_publish(self, cmd):
+        linear_x = cmd.linear.x
+        angular_z = cmd.angular.z
+
+        left_velocity = linear_x - angular_z * self.wheel_separation / 2.0
+        right_velocity = linear_x + angular_z * self.wheel_separation / 2.0
+
+        left_norm = self.normalize_velocity(left_velocity)
+        right_norm = self.normalize_velocity(right_velocity)
+
+        self.publish_wheel_cmd(
+            left_velocity,
+            right_velocity,
+            left_norm,
+            right_norm
+        )
+
     def timer_callback(self):
+        # Topic mode is event-driven (see cmd_callback); the timer only drives
+        # the serial hardware path, which is itself a standalone motor driver.
+        if self.output_mode != 'serial':
+            return
+
         cmd, timed_out = self.get_safe_cmd()
 
         linear_x = cmd.linear.x
@@ -150,9 +184,6 @@ class BaseControllerNode(Node):
             left_norm,
             right_norm
         )
-
-        if self.output_mode != 'serial':
-            return
 
         if timed_out:
             self.send_stop_command()
