@@ -29,6 +29,17 @@ class Pnt50DriverNode(Node):
         self.declare_parameter('right_sign', 1)
         self.declare_parameter('rear_sign', -1)
 
+        # 'differential' (현재 기본) 또는 'mecanum'.
+        self.declare_parameter('drive_mode', 'differential')
+
+        # 메카넘 바퀴별 방향 부호. 순서 [FL, FR, RL, RR].
+        # 기본값은 현재 잘 도는 차동 설정에서 역산한 값(전진 기준)이며,
+        # Step 2 하드웨어 테스트에서 바퀴별로 확정한다.
+        self.declare_parameter('front_left_sign', -1)
+        self.declare_parameter('front_right_sign', 1)
+        self.declare_parameter('rear_left_sign', 1)
+        self.declare_parameter('rear_right_sign', -1)
+
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('send_rate', 20.0)
 
@@ -49,6 +60,12 @@ class Pnt50DriverNode(Node):
         self.right_sign = int(self.get_parameter('right_sign').value)
         self.rear_sign = int(self.get_parameter('rear_sign').value)
 
+        self.drive_mode = str(self.get_parameter('drive_mode').value)
+        self.front_left_sign = int(self.get_parameter('front_left_sign').value)
+        self.front_right_sign = int(self.get_parameter('front_right_sign').value)
+        self.rear_left_sign = int(self.get_parameter('rear_left_sign').value)
+        self.rear_right_sign = int(self.get_parameter('rear_right_sign').value)
+
         # Front driver (2 motors) + rear driver (2 motors) on the same RS485 bus.
         # Each PNT50 controls a pair of motors, so 2 drivers = 4 wheels.
         self.slave_ids = [self.slave_id, self.rear_slave_id]
@@ -68,6 +85,13 @@ class Pnt50DriverNode(Node):
 
         self.last_left_norm = 0.0
         self.last_right_norm = 0.0
+
+        # 메카넘 4바퀴 정규화 명령. 순서 [FL, FR, RL, RR].
+        self.last_fl_norm = 0.0
+        self.last_fr_norm = 0.0
+        self.last_rl_norm = 0.0
+        self.last_rr_norm = 0.0
+
         self.last_cmd_time = None
 
         self.brake_requested = False
@@ -112,6 +136,7 @@ class Pnt50DriverNode(Node):
         self.get_logger().info(f'port: {self.port}')
         self.get_logger().info(f'baudrate: {self.baudrate}')
         self.get_logger().info(f'slave_ids: {self.slave_ids}')
+        self.get_logger().info(f'drive_mode: {self.drive_mode}')
         self.get_logger().info(f'max_rpm: {self.max_rpm}')
         self.get_logger().info(f'use_dual_pid207: {self.use_dual_pid207}')
 
@@ -133,6 +158,11 @@ class Pnt50DriverNode(Node):
             self.get_logger().error(f'Failed to open serial port {self.port}: {e}')
 
     def wheel_cmd_callback(self, msg):
+        if self.drive_mode == 'mecanum':
+            self.handle_mecanum_wheel_cmd(msg)
+            return
+
+        # differential: /wheel_cmd = [left_vel, right_vel, left_norm, right_norm]
         if len(msg.data) < 4:
             self.get_logger().warn('Invalid /wheel_cmd length')
             return
@@ -148,6 +178,27 @@ class Pnt50DriverNode(Node):
         self.last_right_norm = self.clamp(right_norm, -1.0, 1.0)
         self.last_cmd_time = self.get_clock().now()
 
+    def handle_mecanum_wheel_cmd(self, msg):
+        # mecanum: /wheel_cmd = [FL_norm, FR_norm, RL_norm, RR_norm]
+        if len(msg.data) < 4:
+            self.get_logger().warn('Invalid mecanum /wheel_cmd length')
+            return
+
+        fl = float(msg.data[0])
+        fr = float(msg.data[1])
+        rl = float(msg.data[2])
+        rr = float(msg.data[3])
+
+        if not all(math.isfinite(v) for v in (fl, fr, rl, rr)):
+            self.get_logger().warn('Invalid wheel command ignored')
+            return
+
+        self.last_fl_norm = self.clamp(fl, -1.0, 1.0)
+        self.last_fr_norm = self.clamp(fr, -1.0, 1.0)
+        self.last_rl_norm = self.clamp(rl, -1.0, 1.0)
+        self.last_rr_norm = self.clamp(rr, -1.0, 1.0)
+        self.last_cmd_time = self.get_clock().now()
+
     def brake_callback(self, msg):
         previous_state = self.brake_requested
         self.brake_requested = bool(msg.data)
@@ -161,9 +212,9 @@ class Pnt50DriverNode(Node):
             self.get_logger().info('Brake released')
 
     def timer_callback(self):
-        motor1_rpm, motor2_rpm = self.get_target_rpms()
+        driver_cmds = self.get_driver_commands()
 
-        self.publish_target_rpm(motor1_rpm, motor2_rpm)
+        self.publish_target_rpm(driver_cmds)
 
         if self.serial_port is None:
             self.publish_comm_ok(False)
@@ -193,10 +244,7 @@ class Pnt50DriverNode(Node):
             return
 
         ok = True
-        for sid in self.slave_ids:
-            sign = self.slave_sign[sid]
-            m1 = self.clamp_int16(motor1_rpm * sign)
-            m2 = self.clamp_int16(motor2_rpm * sign)
+        for sid, m1, m2 in driver_cmds:
             if self.use_dual_pid207:
                 ok = self.write_dual_rpm_pid207(sid, m1, m2) and ok
             else:
@@ -205,6 +253,41 @@ class Pnt50DriverNode(Node):
                 ok = ok1 and ok2 and ok
 
         self.publish_comm_ok(ok)
+
+    def get_driver_commands(self):
+        """
+        드라이버별 (slave_id, motor1_rpm, motor2_rpm) 목록을 반환한다.
+
+        mecanum: front driver(ID1) = (FL, FR), rear driver(ID2) = (RL, RR).
+        differential: 기존 좌/우 명령에 드라이버별 slave_sign 적용.
+        """
+        if self.drive_mode == 'mecanum':
+            if self.is_timed_out() or self.brake_requested:
+                fl = fr = rl = rr = 0
+            else:
+                fl = int(self.last_fl_norm * self.max_rpm * self.front_left_sign)
+                fr = int(self.last_fr_norm * self.max_rpm * self.front_right_sign)
+                rl = int(self.last_rl_norm * self.max_rpm * self.rear_left_sign)
+                rr = int(self.last_rr_norm * self.max_rpm * self.rear_right_sign)
+
+            return [
+                (self.slave_id,
+                 self.clamp_int16(fl), self.clamp_int16(fr)),
+                (self.rear_slave_id,
+                 self.clamp_int16(rl), self.clamp_int16(rr)),
+            ]
+
+        motor1_rpm, motor2_rpm = self.get_target_rpms()
+
+        cmds = []
+        for sid in self.slave_ids:
+            sign = self.slave_sign[sid]
+            cmds.append((
+                sid,
+                self.clamp_int16(motor1_rpm * sign),
+                self.clamp_int16(motor2_rpm * sign),
+            ))
+        return cmds
 
     def get_target_rpms(self):
         if self.is_timed_out() or self.brake_requested:
@@ -366,9 +449,14 @@ class Pnt50DriverNode(Node):
 
         return crc & 0xFFFF
 
-    def publish_target_rpm(self, motor1_rpm, motor2_rpm):
+    def publish_target_rpm(self, driver_cmds):
+        # 드라이버 순서대로 평탄화: [id1_m1, id1_m2, id2_m1, id2_m2]
         msg = Int16MultiArray()
-        msg.data = [int(motor1_rpm), int(motor2_rpm)]
+        data = []
+        for _, m1, m2 in driver_cmds:
+            data.append(int(m1))
+            data.append(int(m2))
+        msg.data = data
         self.target_rpm_pub.publish(msg)
 
     def publish_comm_ok(self, ok):
