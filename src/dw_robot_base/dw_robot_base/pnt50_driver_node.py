@@ -20,12 +20,14 @@ class Pnt50DriverNode(Node):
         self.declare_parameter('port', '/dev/ttyUSB0')
         self.declare_parameter('baudrate', 19200)
         self.declare_parameter('slave_id', 1)
+        self.declare_parameter('rear_slave_id', 2)
 
         self.declare_parameter('max_rpm', 500)
 
         self.declare_parameter('left_is_motor1', True)
         self.declare_parameter('left_sign', 1)
         self.declare_parameter('right_sign', 1)
+        self.declare_parameter('rear_sign', -1)
 
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('send_rate', 20.0)
@@ -38,12 +40,24 @@ class Pnt50DriverNode(Node):
         self.port = self.get_parameter('port').value
         self.baudrate = int(self.get_parameter('baudrate').value)
         self.slave_id = int(self.get_parameter('slave_id').value)
+        self.rear_slave_id = int(self.get_parameter('rear_slave_id').value)
 
         self.max_rpm = int(self.get_parameter('max_rpm').value)
 
         self.left_is_motor1 = bool(self.get_parameter('left_is_motor1').value)
         self.left_sign = int(self.get_parameter('left_sign').value)
         self.right_sign = int(self.get_parameter('right_sign').value)
+        self.rear_sign = int(self.get_parameter('rear_sign').value)
+
+        # Front driver (2 motors) + rear driver (2 motors) on the same RS485 bus.
+        # Each PNT50 controls a pair of motors, so 2 drivers = 4 wheels.
+        self.slave_ids = [self.slave_id, self.rear_slave_id]
+
+        # Per-driver direction. Rear driver is wired opposite the front one.
+        self.slave_sign = {
+            self.slave_id: 1,
+            self.rear_slave_id: self.rear_sign,
+        }
 
         self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self.send_rate = float(self.get_parameter('send_rate').value)
@@ -97,7 +111,7 @@ class Pnt50DriverNode(Node):
         self.get_logger().info(f'brake_topic: {self.brake_topic}')
         self.get_logger().info(f'port: {self.port}')
         self.get_logger().info(f'baudrate: {self.baudrate}')
-        self.get_logger().info(f'slave_id: {self.slave_id}')
+        self.get_logger().info(f'slave_ids: {self.slave_ids}')
         self.get_logger().info(f'max_rpm: {self.max_rpm}')
         self.get_logger().info(f'use_dual_pid207: {self.use_dual_pid207}')
 
@@ -159,10 +173,13 @@ class Pnt50DriverNode(Node):
             zero_ok = self.send_zero_rpm_command()
 
             if not self.brake_command_sent:
-                brake_ok = self.write_pnt_brake_pid175(
-                    motor1_brake=True,
-                    motor2_brake=True
-                )
+                brake_ok = True
+                for sid in self.slave_ids:
+                    brake_ok = self.write_pnt_brake_pid175(
+                        sid,
+                        motor1_brake=True,
+                        motor2_brake=True
+                    ) and brake_ok
 
                 if brake_ok:
                     self.brake_command_sent = True
@@ -175,12 +192,17 @@ class Pnt50DriverNode(Node):
 
             return
 
-        if self.use_dual_pid207:
-            ok = self.write_dual_rpm_pid207(motor1_rpm, motor2_rpm)
-        else:
-            ok1 = self.write_single_word(130, motor1_rpm)
-            ok2 = self.write_single_word(131, motor2_rpm)
-            ok = ok1 and ok2
+        ok = True
+        for sid in self.slave_ids:
+            sign = self.slave_sign[sid]
+            m1 = self.clamp_int16(motor1_rpm * sign)
+            m2 = self.clamp_int16(motor2_rpm * sign)
+            if self.use_dual_pid207:
+                ok = self.write_dual_rpm_pid207(sid, m1, m2) and ok
+            else:
+                ok1 = self.write_single_word(sid, 130, m1)
+                ok2 = self.write_single_word(sid, 131, m2)
+                ok = ok1 and ok2 and ok
 
         self.publish_comm_ok(ok)
 
@@ -214,14 +236,17 @@ class Pnt50DriverNode(Node):
         return age > self.cmd_timeout
 
     def send_zero_rpm_command(self):
-        if self.use_dual_pid207:
-            return self.write_dual_rpm_pid207(0, 0)
+        ok = True
+        for sid in self.slave_ids:
+            if self.use_dual_pid207:
+                ok = self.write_dual_rpm_pid207(sid, 0, 0) and ok
+            else:
+                ok1 = self.write_single_word(sid, 130, 0)
+                ok2 = self.write_single_word(sid, 131, 0)
+                ok = ok1 and ok2 and ok
+        return ok
 
-        ok1 = self.write_single_word(130, 0)
-        ok2 = self.write_single_word(131, 0)
-        return ok1 and ok2
-
-    def write_pnt_brake_pid175(self, motor1_brake=True, motor2_brake=True):
+    def write_pnt_brake_pid175(self, slave_id, motor1_brake=True, motor2_brake=True):
         """
         PID 175: PID_PNT_BRAKE
 
@@ -239,15 +264,15 @@ class Pnt50DriverNode(Node):
 
         data = (dh << 8) | dl
 
-        return self.write_single_word(pid, data)
+        return self.write_single_word(slave_id, pid, data)
 
-    def write_dual_rpm_pid207(self, motor1_rpm, motor2_rpm):
+    def write_dual_rpm_pid207(self, slave_id, motor1_rpm, motor2_rpm):
         pid = 207
         quantity = 2
         byte_count = 4
 
         payload = bytearray()
-        payload.append(self.slave_id)
+        payload.append(slave_id)
         payload.append(0x10)
         payload += pid.to_bytes(2, byteorder='big', signed=False)
         payload += quantity.to_bytes(2, byteorder='big', signed=False)
@@ -266,7 +291,7 @@ class Pnt50DriverNode(Node):
                 return False
 
             expected_prefix = bytes([
-                self.slave_id,
+                slave_id,
                 0x10,
                 0x00,
                 0xCF,
@@ -284,9 +309,9 @@ class Pnt50DriverNode(Node):
             self.serial_port = None
             return False
 
-    def write_single_word(self, pid, value):
+    def write_single_word(self, slave_id, pid, value):
         payload = bytearray()
-        payload.append(self.slave_id)
+        payload.append(slave_id)
         payload.append(0x06)
         payload += int(pid).to_bytes(2, byteorder='big', signed=False)
         payload += int(value).to_bytes(2, byteorder='big', signed=True)

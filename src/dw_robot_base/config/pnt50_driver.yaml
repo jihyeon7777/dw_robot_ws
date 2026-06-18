@@ -6,12 +6,16 @@ pnt50_driver_node:
     port: "/dev/ttyUSB0"
     baudrate: 19200
     slave_id: 1
+    rear_slave_id: 2
 
     max_rpm: 500
 
     left_is_motor1: true
     left_sign: -1
     right_sign: 1
+
+    # Rear driver is wired opposite, so flip both rear motors.
+    rear_sign: -1
 
     cmd_timeout: 0.5
     send_rate: 50.0
