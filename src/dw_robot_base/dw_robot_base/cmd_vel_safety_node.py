@@ -52,6 +52,7 @@ class CmdVelSafetyNode(Node):
         self.declare_parameter('cmd_vel_timeout', 0.5)
 
         self.declare_parameter('max_linear_velocity', 0.3)
+        self.declare_parameter('max_lateral_velocity', 0.3)
         self.declare_parameter('max_angular_velocity', 0.8)
 
         self.declare_parameter('max_linear_acceleration', 0.3)
@@ -67,6 +68,9 @@ class CmdVelSafetyNode(Node):
 
         self.max_linear_velocity = float(
             self.get_parameter('max_linear_velocity').value
+        )
+        self.max_lateral_velocity = float(
+            self.get_parameter('max_lateral_velocity').value
         )
         self.max_angular_velocity = float(
             self.get_parameter('max_angular_velocity').value
@@ -87,9 +91,11 @@ class CmdVelSafetyNode(Node):
         # State variables
         # -----------------------------
         self.target_linear_x = 0.0
+        self.target_linear_y = 0.0
         self.target_angular_z = 0.0
 
         self.current_linear_x = 0.0
+        self.current_linear_y = 0.0
         self.current_angular_z = 0.0
 
         self.last_cmd_time = self.get_clock().now()
@@ -118,15 +124,17 @@ class CmdVelSafetyNode(Node):
         self.get_logger().info(f'input_topic: {self.input_topic}')
         self.get_logger().info(f'output_topic: {self.output_topic}')
         self.get_logger().info(f'max_linear_velocity: {self.max_linear_velocity:.3f} m/s')
+        self.get_logger().info(f'max_lateral_velocity: {self.max_lateral_velocity:.3f} m/s')
         self.get_logger().info(f'max_angular_velocity: {self.max_angular_velocity:.3f} rad/s')
         self.get_logger().info(f'cmd_vel_timeout: {self.cmd_vel_timeout:.3f} s')
 
     def cmd_vel_callback(self, msg: Twist):
         """
         /cmd_vel_raw를 받아서 목표 속도로 저장한다.
-        이 단계에서는 linear.x와 angular.z만 사용한다.
+        linear.x(전후), linear.y(좌우 평행이동, 메카넘), angular.z(yaw)를 사용한다.
         """
         raw_linear_x = msg.linear.x
+        raw_linear_y = msg.linear.y
         raw_angular_z = msg.angular.z
 
         # 속도 제한
@@ -134,6 +142,12 @@ class CmdVelSafetyNode(Node):
             raw_linear_x,
             -self.max_linear_velocity,
             self.max_linear_velocity
+        )
+
+        self.target_linear_y = clamp(
+            raw_linear_y,
+            -self.max_lateral_velocity,
+            self.max_lateral_velocity
         )
 
         self.target_angular_z = clamp(
@@ -160,9 +174,11 @@ class CmdVelSafetyNode(Node):
         # timeout 발생 시 목표 속도를 0으로 만든다.
         if time_since_last_cmd > self.cmd_vel_timeout:
             safe_target_linear_x = 0.0
+            safe_target_linear_y = 0.0
             safe_target_angular_z = 0.0
         else:
             safe_target_linear_x = self.target_linear_x
+            safe_target_linear_y = self.target_linear_y
             safe_target_angular_z = self.target_angular_z
 
         # 가속도 제한 적용
@@ -170,6 +186,13 @@ class CmdVelSafetyNode(Node):
             self.current_linear_x = apply_acceleration_limit(
                 self.current_linear_x,
                 safe_target_linear_x,
+                self.max_linear_acceleration,
+                dt
+            )
+
+            self.current_linear_y = apply_acceleration_limit(
+                self.current_linear_y,
+                safe_target_linear_y,
                 self.max_linear_acceleration,
                 dt
             )
@@ -182,11 +205,15 @@ class CmdVelSafetyNode(Node):
             )
         else:
             self.current_linear_x = safe_target_linear_x
+            self.current_linear_y = safe_target_linear_y
             self.current_angular_z = safe_target_angular_z
 
         # 아주 작은 값은 0으로 처리
         if abs(self.current_linear_x) < 1e-4:
             self.current_linear_x = 0.0
+
+        if abs(self.current_linear_y) < 1e-4:
+            self.current_linear_y = 0.0
 
         if abs(self.current_angular_z) < 1e-4:
             self.current_angular_z = 0.0
@@ -194,7 +221,7 @@ class CmdVelSafetyNode(Node):
         # 안전 속도 명령 publish
         cmd_msg = Twist()
         cmd_msg.linear.x = self.current_linear_x
-        cmd_msg.linear.y = 0.0
+        cmd_msg.linear.y = self.current_linear_y
         cmd_msg.linear.z = 0.0
 
         cmd_msg.angular.x = 0.0
