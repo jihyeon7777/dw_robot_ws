@@ -21,6 +21,11 @@ class BaseControllerNode(Node):
         self.declare_parameter('wheel_separation', 0.30)
         self.declare_parameter('max_wheel_velocity', 0.30)
 
+        # 'differential' (현재 기본) 또는 'mecanum'.
+        self.declare_parameter('drive_mode', 'differential')
+        # 메카넘 운동학 파라미터: lx + ly (로봇 중심에서 바퀴까지 x/y 거리 합).
+        self.declare_parameter('lx_plus_ly', 0.485)
+
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('publish_rate', 30.0)
 
@@ -40,6 +45,9 @@ class BaseControllerNode(Node):
 
         self.wheel_separation = float(self.get_parameter('wheel_separation').value)
         self.max_wheel_velocity = float(self.get_parameter('max_wheel_velocity').value)
+
+        self.drive_mode = str(self.get_parameter('drive_mode').value)
+        self.lx_plus_ly = float(self.get_parameter('lx_plus_ly').value)
 
         self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self.publish_rate = float(self.get_parameter('publish_rate').value)
@@ -92,6 +100,7 @@ class BaseControllerNode(Node):
         self.get_logger().info(f'wheel_cmd_topic: {self.wheel_cmd_topic}')
         self.get_logger().info(f'brake_topic: {self.brake_topic}')
         self.get_logger().info(f'output_mode: {self.output_mode}')
+        self.get_logger().info(f'drive_mode: {self.drive_mode}')
         self.get_logger().info(f'use_brake_protocol: {self.use_brake_protocol}')
 
     def open_serial(self):
@@ -120,7 +129,10 @@ class BaseControllerNode(Node):
         # decel to zero) and downstream by the pnt50_driver_node hardware
         # failsafe, so we just forward each fresh command immediately.
         if self.output_mode != 'serial':
-            self.compute_and_publish(self.last_cmd)
+            if self.drive_mode == 'mecanum':
+                self.compute_and_publish_mecanum(self.last_cmd)
+            else:
+                self.compute_and_publish(self.last_cmd)
 
     def brake_callback(self, msg):
         self.external_brake_requested = bool(msg.data)
@@ -150,6 +162,37 @@ class BaseControllerNode(Node):
             right_velocity,
             left_norm,
             right_norm
+        )
+
+    def compute_mecanum_wheel_speeds(self, vx, vy, wz):
+        """
+        Twist -> 4바퀴 선속도 [FL, FR, RL, RR] (m/s).
+
+        바퀴 순서는 문서 기준 [front_left, front_right, rear_left, rear_right].
+        부호는 표준 메카넘(X-roller) 역기구학이며, 실제 장착/배선에 따라
+        Step 2 하드웨어 테스트에서 바퀴별 방향 부호로 보정한다.
+        """
+        l = self.lx_plus_ly
+
+        front_left = vx - vy - l * wz
+        front_right = vx + vy + l * wz
+        rear_left = vx + vy - l * wz
+        rear_right = vx - vy + l * wz
+
+        return front_left, front_right, rear_left, rear_right
+
+    def compute_and_publish_mecanum(self, cmd):
+        fl, fr, rl, rr = self.compute_mecanum_wheel_speeds(
+            cmd.linear.x,
+            cmd.linear.y,
+            cmd.angular.z
+        )
+
+        self.publish_wheel_cmd4(
+            self.normalize_velocity(fl),
+            self.normalize_velocity(fr),
+            self.normalize_velocity(rl),
+            self.normalize_velocity(rr)
         )
 
     def timer_callback(self):
@@ -237,6 +280,17 @@ class BaseControllerNode(Node):
             float(right_velocity),
             float(left_norm),
             float(right_norm),
+        ]
+        self.wheel_cmd_pub.publish(msg)
+
+    def publish_wheel_cmd4(self, fl_norm, fr_norm, rl_norm, rr_norm):
+        # Mecanum 4-wheel command. 순서: [front_left, front_right, rear_left, rear_right].
+        msg = Float32MultiArray()
+        msg.data = [
+            float(fl_norm),
+            float(fr_norm),
+            float(rl_norm),
+            float(rr_norm),
         ]
         self.wheel_cmd_pub.publish(msg)
 
