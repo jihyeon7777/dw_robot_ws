@@ -2,54 +2,56 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Overview
+## 개요
 
-This is a ROS 2 (Jazzy) workspace for "DW robot," a differential-drive robot. All packages use the
-`ament_python` build type. There are four packages under `src/`:
+이 저장소는 차동 구동(differential-drive) 로봇인 "DW robot"을 위한 ROS 2 (Jazzy) 워크스페이스다.
+모든 패키지는 `ament_python` 빌드 타입을 사용한다. `src/` 아래에 4개의 패키지가 있다.
 
-- `dw_robot_base` — the core package: cmd_vel arbitration/safety, motor drivers (serial + Modbus RTU),
-  odometry, keyboard/RF teleop, and a USB camera node. Almost all real work happens here.
-- `dw_robot_bringup` — top-level launch convenience package (currently just `sim_bringup.launch.py`).
-- `dw_robot_description` — URDF/xacro robot model and RViz display launch.
-- `hwt901b_driver` — standalone driver node for the WitMotion HWT901B IMU (serial protocol parser).
+- `dw_robot_base` — 핵심 패키지. cmd_vel 중재/안전 처리, 모터 드라이버(시리얼 + Modbus RTU),
+  오도메트리, 키보드/RF 텔레옵, USB 카메라 노드를 포함한다. 실제 작업은 거의 다 이 패키지에서 일어난다.
+- `dw_robot_bringup` — 최상위 launch 편의 패키지(현재는 `sim_bringup.launch.py` 하나뿐).
+- `dw_robot_description` — URDF/xacro 로봇 모델과 RViz 디스플레이 launch.
+- `hwt901b_driver` — WitMotion HWT901B IMU용 독립 드라이버 노드(시리얼 프로토콜 파서).
 
-There is a stray top-level `motordriver.py` (not part of any ROS package) — a one-off script for sending
-a raw Modbus packet to change an MDROBOT motor controller's slave ID. It is not imported by anything.
+최상위에 `motordriver.py`라는 별도 파일이 있는데, 어떤 ROS 패키지에도 속하지 않는다. MDROBOT 모터
+컨트롤러의 slave ID를 변경하기 위해 raw Modbus 패킷을 한 번 보내는 일회용 스크립트이며, 다른 곳에서
+import되지 않는다.
 
-## Build / lint / test
+## 빌드 / 린트 / 테스트
 
-Standard `colcon` workflow from the workspace root (`/home/jh/dw_robot_ws`):
+워크스페이스 루트(`/home/jh/dw_robot_ws`)에서 표준 `colcon` 워크플로우를 사용한다.
 
 ```bash
-colcon build --symlink-install      # build all packages
-colcon build --symlink-install --packages-select dw_robot_base   # build a single package
-source install/setup.bash           # required before running any node/launch file
+colcon build --symlink-install      # 전체 패키지 빌드
+colcon build --symlink-install --packages-select dw_robot_base   # 단일 패키지만 빌드
+source install/setup.bash           # 노드/launch 파일 실행 전에 반드시 필요
 ```
 
-Each package's tests are the ament boilerplate (`test_copyright.py`, `test_flake8.py`, `test_pep257.py`)
-run via pytest/colcon:
+각 패키지의 테스트는 ament 표준 보일러플레이트(`test_copyright.py`, `test_flake8.py`, `test_pep257.py`)이며
+pytest/colcon으로 실행한다.
 
 ```bash
 colcon test --packages-select dw_robot_base
 colcon test-result --verbose
 ```
 
-To run a single test file directly (faster iteration, no colcon):
+colcon 없이 테스트 파일 하나만 빠르게 실행하려면:
 
 ```bash
 python3 -m pytest src/dw_robot_base/test/test_flake8.py
 ```
 
-There are no unit tests for node logic itself — only the ament linters (flake8, pep257, copyright header
-check). Note `pnt50_modbus.py` is intentionally ROS-free so it can be unit-tested or reused standalone.
+노드 로직 자체에 대한 단위 테스트는 없고, ament 린터(flake8, pep257, copyright 헤더 검사)만 존재한다.
+`pnt50_modbus.py`는 단독으로 테스트하거나 다른 프로젝트에서 재사용할 수 있도록 의도적으로 ROS 의존성
+없이 작성되어 있다.
 
-## Architecture
+## 아키텍처
 
-### cmd_vel pipeline (topic chain)
+### cmd_vel 파이프라인 (토픽 체인)
 
-Robot motion commands flow through a fixed chain of small, single-purpose nodes connected only by topics
-(never by direct calls). Understanding this chain is necessary before touching any one node, since each
-node assumes specific upstream/downstream behavior:
+로봇의 이동 명령은 토픽으로만 연결된(직접 함수 호출이 아닌) 작고 단일 책임을 가진 노드들의 고정된
+체인을 통해 흐른다. 각 노드가 상류/하류 노드의 특정 동작을 전제로 하고 있기 때문에, 노드 하나를
+건드리기 전에 이 체인 전체를 이해해야 한다.
 
 ```
 keyboard_brake_node  ─┐
@@ -59,80 +61,81 @@ rf_arduino_node       ─┘   (/cmd_vel_raw)      (/cmd_vel_safe)
  /cmd_vel_rf)
 ```
 
-- **`cmd_vel_mux_node`**: selects between the keyboard and RF input sources based on the
-  `input_source` parameter (runtime-changeable via `ros2 param set`), zeroing output if the selected
-  source has timed out or is invalid.
-- **`cmd_vel_safety_node`**: clamps velocity/acceleration to configured limits and zeroes commands on
-  timeout. This is the single place velocity/acceleration limits are enforced — node-specific
-  per-wheel clamping downstream is just normalization, not a safety limit.
-- **`base_controller_node`**: converts `Twist` → differential-drive wheel velocities, normalizes them
-  to `[-1, 1]`, publishes `/wheel_cmd` (`[left_vel, right_vel, left_norm, right_norm]`), and optionally
-  also writes simple ASCII serial commands (`M,<l>,<r>`, `S`, `B,1`/`B,0`) directly to a board when
-  `output_mode: serial`. It implements its own brake state machine (`use_brake_protocol`,
-  `brake_on_timeout`, `brake_on_zero_cmd`) independent of `pnt50_driver_node`'s.
-- **`fake_diff_drive_node`**: a simulation stand-in for the real base — integrates `/cmd_vel_safe`
-  directly into `/odom`, `/tf`, and `/joint_states` (no `/wheel_cmd` involved). Used in `*_fake*`
-  launch files in place of the real motor stack.
-- **`pnt50_driver_node`**: consumes `/wheel_cmd`, converts normalized wheel speeds to RPM, and talks
-  Modbus RTU (function codes 0x06/0x10, CRC16) to dual MDROBOT/PNT50 motor controllers over serial.
-  Publishes `/pnt50/target_rpm` and `/pnt50/comm_ok` for monitoring. Has its own brake handling via
-  PID 175 (electric brake), separate from `base_controller_node`'s brake protocol — the two are not
-  meant to run in the same launch file pair (see launch files below).
-- **`odom_from_pnt50_feedback_node`**: separate from the cmd_vel chain — integrates wheel tick feedback
-  (`/pnt50_feedback`, `[left_ticks, right_ticks]`) into `/odom` + `/tf` using basic differential-drive
-  dead reckoning.
+- **`cmd_vel_mux_node`**: `input_source` 파라미터(런타임에 `ros2 param set`으로 변경 가능)를 기준으로
+  키보드/RF 입력 소스를 선택한다. 선택된 소스가 타임아웃되었거나 유효하지 않으면 0을 publish한다.
+- **`cmd_vel_safety_node`**: 설정된 속도/가속도 한계로 클램핑하고, 타임아웃 시 명령을 0으로 만든다.
+  속도/가속도 제한이 실제로 강제되는 곳은 여기 한 군데뿐이며, 하류의 바퀴별 클램핑은 안전 제한이
+  아니라 단순 정규화에 불과하다.
+- **`base_controller_node`**: `Twist`를 차동 구동 바퀴 속도로 변환하고, `[-1, 1]`로 정규화하여
+  `/wheel_cmd`(`[left_vel, right_vel, left_norm, right_norm]`)를 publish한다. `output_mode: serial`일
+  때는 보드로 단순 ASCII 시리얼 명령(`M,<l>,<r>`, `S`, `B,1`/`B,0`)도 직접 전송한다. 자체 브레이크
+  상태 머신(`use_brake_protocol`, `brake_on_timeout`, `brake_on_zero_cmd`)을 가지고 있으며 이는
+  `pnt50_driver_node`의 브레이크 처리와는 독립적이다.
+- **`fake_diff_drive_node`**: 실제 베이스를 대신하는 시뮬레이션용 노드. `/cmd_vel_safe`를 직접
+  적분하여 `/odom`, `/tf`, `/joint_states`를 만든다(`/wheel_cmd`는 거치지 않음). `*_fake*` launch
+  파일에서 실제 모터 스택 대신 사용된다.
+- **`pnt50_driver_node`**: `/wheel_cmd`를 받아 정규화된 바퀴 속도를 RPM으로 변환하고, 시리얼을 통해
+  듀얼 MDROBOT/PNT50 모터 컨트롤러에 Modbus RTU(함수 코드 0x06/0x10, CRC16)로 통신한다. 모니터링용으로
+  `/pnt50/target_rpm`, `/pnt50/comm_ok`를 publish한다. PID 175(전기 브레이크)를 이용한 자체 브레이크
+  처리가 있으며 `base_controller_node`의 브레이크 프로토콜과는 별개다 — 이 둘은 같은 launch 파일
+  조합에서 함께 쓰이도록 설계되어 있지 않다(아래 launch 파일 항목 참고).
+- **`odom_from_pnt50_feedback_node`**: cmd_vel 체인과는 별도로 동작한다. 바퀴 틱 피드백
+  (`/pnt50_feedback`, `[left_ticks, right_ticks]`)을 받아 기본적인 차동 구동 dead reckoning으로
+  `/odom` + `/tf`를 만든다.
 
-Brake is a parallel side channel (`/brake_cmd`, `std_msgs/Bool`), published by `keyboard_brake_node` or
-`rf_arduino_node` and consumed independently by `base_controller_node` and `pnt50_driver_node`.
+브레이크는 병렬적인 사이드 채널(`/brake_cmd`, `std_msgs/Bool`)로, `keyboard_brake_node`나
+`rf_arduino_node`가 publish하고 `base_controller_node`와 `pnt50_driver_node`가 각각 독립적으로
+구독해서 처리한다.
 
-### Modbus / motor control
+### Modbus / 모터 제어
 
-`pnt50_modbus.py` is a standalone, ROS-independent Modbus RTU client (`Pnt50ModbusClient`) for
-MDROBOT/PNT50 controllers, with PID constants, CRC16, and read/write-word helpers. `pnt50_driver_node.py`
-re-implements equivalent low-level framing/CRC logic inline rather than using this client — the two are
-not currently unified, so a protocol fix may need to be applied in both places.
+`pnt50_modbus.py`는 MDROBOT/PNT50 컨트롤러용으로 독립적인(ROS에 의존하지 않는) Modbus RTU 클라이언트
+(`Pnt50ModbusClient`)로, PID 상수, CRC16, 레지스터 읽기/쓰기 헬퍼를 제공한다. `pnt50_driver_node.py`는
+이 클라이언트를 쓰지 않고 동일한 저수준 프레이밍/CRC 로직을 자체적으로 다시 구현하고 있다 — 두 곳이
+통합되어 있지 않으므로, 프로토콜 관련 수정이 필요하면 양쪽 모두에 적용해야 할 수 있다.
 
-### Input sources
+### 입력 소스
 
-- `rf_arduino_node` reads a 9-field CSV line from an Arduino over serial
-  (`throttle,steering,enable,brake,signal_ok,pulse1,pulse2,rpm1,rpm2`), converting RC PWM pulses to a
-  `Twist` plus brake state and motor feedback. It accepts older 4- and 5-field formats for backward
-  compatibility with earlier Arduino firmware.
-- `keyboard_brake_node` is a terminal-raw-mode teleop (`i,j,k,l,u,o,m,.` for motion, `k`=brake,
-  `space`=stop without brake, `q/z/w/x` to adjust speed step).
-- `rc_pnt50_serial_node` is a simpler/older variant that just republishes the raw Arduino CSV as a
-  `Float32MultiArray` (not wired into the cmd_vel chain; appears to predate `rf_arduino_node`).
+- `rf_arduino_node`는 아두이노로부터 시리얼로 9개 필드 CSV 한 줄을 읽는다
+  (`throttle,steering,enable,brake,signal_ok,pulse1,pulse2,rpm1,rpm2`). RC PWM 펄스를 `Twist`와
+  브레이크 상태, 모터 피드백으로 변환한다. 이전 아두이노 펌웨어와의 하위 호환을 위해 4개/5개 필드
+  형식도 받아들인다.
+- `keyboard_brake_node`는 터미널 raw 모드 텔레옵이다(`i,j,k,l,u,o,m,.`로 이동, `k`=브레이크,
+  `space`=브레이크 없이 정지, `q/z/w/x`로 속도 스텝 조정).
+- `rc_pnt50_serial_node`는 더 단순한/오래된 버전으로, 아두이노의 raw CSV를 그냥 `Float32MultiArray`로
+  재publish만 한다(cmd_vel 체인에는 연결되어 있지 않으며, `rf_arduino_node`보다 먼저 만들어진 것으로
+  보인다).
 
-### Launch files (`dw_robot_base/launch/`)
+### Launch 파일 (`dw_robot_base/launch/`)
 
-Pick the launch file matching the actual hardware combination in use — each wires together a specific
-subset of nodes and is not just a superset/subset of the others:
+실제 사용 중인 하드웨어 조합에 맞는 launch 파일을 골라야 한다. 각 파일은 특정 노드 조합을 연결하며,
+서로 단순한 상위/하위 집합 관계가 아니다.
 
-- `keyboard_fake.launch.py` / `rf_fake.launch.py`: teleop → mux → safety → **fake** diff drive (simulation,
-  no real motors), with RViz.
-- `keyboard_real.launch.py` / `keyboard_pnt50.launch.py` / `rf_pnt50.launch.py`: teleop → mux → safety →
-  `base_controller_node` (+ `pnt50_driver_node` in the `_pnt50` variants) against **real** hardware.
-- `rf_pnt50_rviz.launch.py`: a separate, narrower path — robot_state_publisher +
-  `odom_from_pnt50_feedback_node` + RViz only, for visualizing odometry from real wheel feedback without
-  the full teleop/safety/control chain.
-- `pnt50_driver.launch.py`: just the PNT50 motor driver in isolation.
+- `keyboard_fake.launch.py` / `rf_fake.launch.py`: 텔레옵 → mux → safety → **fake** diff drive
+  (실제 모터 없는 시뮬레이션) + RViz.
+- `keyboard_real.launch.py` / `keyboard_pnt50.launch.py` / `rf_pnt50.launch.py`: 텔레옵 → mux →
+  safety → `base_controller_node`(`_pnt50` 변형에서는 `pnt50_driver_node`도 포함) — **실제** 하드웨어
+  대상.
+- `rf_pnt50_rviz.launch.py`: 별도의 더 좁은 경로 — robot_state_publisher + `odom_from_pnt50_feedback_node`
+  + RViz만 실행하며, 전체 텔레옵/safety/제어 체인 없이 실제 바퀴 피드백 기반 오도메트리만 시각화한다.
+- `pnt50_driver.launch.py`: PNT50 모터 드라이버만 단독 실행.
 
-All launch files load YAML parameter files from `dw_robot_base/config/*.yaml` via
-`FindPackageShare`/`get_package_share_directory`, so parameter changes belong in the YAML files, not as
-launch-file literals (with the exception of a few inline overrides, e.g. `input_source` and the camera
-params in `rf_pnt50.launch.py`).
+모든 launch 파일은 `dw_robot_base/config/*.yaml`의 파라미터를 `FindPackageShare`/
+`get_package_share_directory`를 통해 로드한다. 따라서 파라미터를 바꿀 때는 launch 파일에 직접
+적기보다 YAML 파일을 수정해야 한다(단, `rf_pnt50.launch.py`의 `input_source`나 카메라 파라미터처럼
+일부 인라인 오버라이드는 예외).
 
-### Topic timeouts everywhere
+### 곳곳에 있는 토픽 타임아웃
 
-Nearly every node in the cmd_vel/teleop chain independently tracks "time since last message" and zeroes
-its output (and/or requests brake) on timeout — `cmd_vel_mux_node`, `cmd_vel_safety_node`,
-`base_controller_node`, `pnt50_driver_node`, and `rf_arduino_node` each have their own
-`*_timeout`/`cmd_timeout` parameter. When debugging "robot doesn't move" or "robot won't stop," check
-which of these independent timeouts is firing — they are not centralized.
+cmd_vel/텔레옵 체인의 거의 모든 노드가 "마지막 메시지 수신 후 경과 시간"을 각자 독립적으로 추적하고,
+타임아웃 시 출력을 0으로 만들거나 브레이크를 요청한다 — `cmd_vel_mux_node`, `cmd_vel_safety_node`,
+`base_controller_node`, `pnt50_driver_node`, `rf_arduino_node` 모두 각자의 `*_timeout`/`cmd_timeout`
+파라미터를 가지고 있다. "로봇이 안 움직인다" 또는 "로봇이 멈추지 않는다" 같은 문제를 디버깅할 때는
+이 독립적인 타임아웃들 중 어느 것이 발동했는지 확인해야 한다 — 이들은 중앙에서 관리되지 않는다.
 
-### HWT901B IMU driver
+### HWT901B IMU 드라이버
 
-`hwt901b_driver/hwt901b_node.py` runs its own serial-reading thread (`serial_read_loop`) decoupled from
-the ROS publish timer (`publish_data`), parsing the WitMotion binary frame protocol (0x55 header,
-packet types 0x51/0x52/0x53/0x54 for accel/gyro/angle/mag, checksum = sum of first 10 bytes). It is
-standalone — not currently referenced by any launch file in this workspace.
+`hwt901b_driver/hwt901b_node.py`는 ROS publish 타이머(`publish_data`)와 분리된 자체 시리얼 읽기
+스레드(`serial_read_loop`)를 돌리며, WitMotion 바이너리 프레임 프로토콜(0x55 헤더, 패킷 타입
+0x51/0x52/0x53/0x54는 각각 가속도/자이로/각도/지자기, 체크섬은 앞 10바이트의 합)을 파싱한다. 현재
+이 워크스페이스의 어떤 launch 파일에서도 참조되지 않는 독립 노드다.
