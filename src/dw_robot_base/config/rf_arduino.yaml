@@ -14,15 +14,18 @@ rf_arduino_node:
 
     # CH7 모드 스위치. 아두이노 CSV 10번째 필드(ch7)가 들어오면 자동 판정.
     # CSV에 ch7이 없으면 default_drive_mode 사용(현재 9필드 = manual 유지).
-    # 임계값은 placeholder — CH7 PWM 실측 후 확정할 것 (문서 99 TODO).
+    # 실측 (2026-06-18): MANUAL 1991~1992, MECANUM 1492~1495, AUTO 996.
+    #   >= 1700 -> MANUAL, <= 1250 -> AUTO, 그 사이 -> MECANUM.
     default_drive_mode: "manual"
     ch7_manual_threshold: 1700
-    ch7_auto_threshold: 1300
+    ch7_auto_threshold: 1250
 
-    throttle_center: 1506
-    throttle_min: 1280
-    throttle_max: 1732
+    # 실측 (2026-06-18): CH1 throttle 중립 1490~1493, 전진끝 1739~1740, 후진끝 1245~1253
+    throttle_center: 1491
+    throttle_min: 1248
+    throttle_max: 1740
 
+    # 실측 (2026-06-18): CH2 steering 중립 1495~1498, 좌회전끝 1735~1738, 우회전끝 1256~1259
     steering_center: 1496
     steering_min: 1257
     steering_max: 1737

@@ -104,6 +104,9 @@ class Pnt50DriverNode(Node):
 
         self.brake_requested = False
         self.brake_command_sent = False
+        # 드라이버는 전원 투입 시 전기브레이크가 걸린 채 시작될 수 있다.
+        # 브레이크가 아닐 때 한 번 명시적으로 해제(PID175=0)를 보낸다.
+        self.brake_released = False
 
         self.target_rpm_pub = self.create_publisher(
             Int16MultiArray,
@@ -213,6 +216,7 @@ class Pnt50DriverNode(Node):
 
         if self.brake_requested and not previous_state:
             self.brake_command_sent = False
+            self.brake_released = False
             self.get_logger().warn('Brake requested')
 
         elif not self.brake_requested and previous_state:
@@ -250,6 +254,20 @@ class Pnt50DriverNode(Node):
                 self.publish_comm_ok(zero_ok)
 
             return
+
+        # 브레이크 상태가 아니면 시작 시(또는 해제 직후) 한 번 전기브레이크를 푼다.
+        if not self.brake_released:
+            release_ok = True
+            for sid in self.slave_ids:
+                release_ok = self.write_pnt_brake_pid175(
+                    sid,
+                    motor1_brake=False,
+                    motor2_brake=False
+                ) and release_ok
+
+            if release_ok:
+                self.brake_released = True
+                self.get_logger().info('PNT electric brake released')
 
         ok = True
         for sid, m1, m2 in driver_cmds:

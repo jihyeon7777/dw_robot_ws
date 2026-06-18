@@ -14,11 +14,15 @@ AUTO
 
 `CH7` PWM 값은 큰 값에서 작은 값 방향으로 변한다.
 
-| CH7 단계 | PWM 방향 | 모드 | 설명 |
-|---:|---|---|---|
-| 1단계 | 큰 값 | `MANUAL` | 일반 수동 조종 |
-| 2단계 | 중간 값 | `MECANUM` | 메카넘 수동 이동 |
-| 3단계 | 작은 값 | `AUTO` | 자율주행 |
+| CH7 단계 | PWM 방향 | 실측 PWM | 모드 | 설명 |
+|---:|---|---:|---|---|
+| 1단계 | 큰 값 | 1991~1992 | `MANUAL` | 일반 수동 조종 |
+| 2단계 | 중간 값 | 1492~1495 | `MECANUM` | 메카넘 수동 이동 |
+| 3단계 | 작은 값 | 996 | `AUTO` | 자율주행 |
+
+판정 임계값(`rf_arduino.yaml`): `>= 1700` → MANUAL, `<= 1250` → AUTO, 그 사이 → MECANUM.
+
+> CH7은 아두이노 CSV의 10번째 필드(`ch7`)로 들어와야 한다. CSV에 없으면 `default_drive_mode`(manual)로 동작한다.
 
 ## 조종기 채널
 
@@ -29,6 +33,7 @@ CH1: throttle
 CH2: yaw
 CH4: estop
 CH7: mode select
+
 ```
 
 | 항목 | 값 |
@@ -43,6 +48,16 @@ CH7: mode select
 | mode 변경 | CH7 |
 
 RF receiver 세부 스펙이 필요하면 `Receiver_Specifications.md`를 먼저 읽는다.
+
+### 조종기 PWM 보정값 (실측 2026-06-18)
+
+`rf_arduino.yaml`에 반영됨.
+
+| 채널 | 중립 | 한쪽 끝 | 반대쪽 끝 |
+|---|---:|---:|---:|
+| CH1 throttle | 1490~1493 | 전진 1739~1740 | 후진 1245~1253 |
+| CH2 steering | 1495~1498 | 좌회전 1735~1738 | 우회전 1256~1259 |
+| CH7 mode | — | MANUAL 1991~1992 / MECANUM 1492~1495 | AUTO 996 |
 
 ## 안전 우선순위
 
@@ -118,8 +133,9 @@ angular.z  yaw 회전
 ## TODO
 
 ```text
-TODO: CH7 각 단계 실제 PWM 값 측정
-TODO: CH7 mode threshold 결정
+DONE: CH7 각 단계 실제 PWM 값 측정 (MANUAL 1991 / MECANUM 1493 / AUTO 996)
+DONE: CH7 mode threshold 결정 (manual>=1700, auto<=1250)
+TODO: 아두이노 펌웨어가 CSV 10번째 필드로 CH7 PWM을 전송하도록 추가
 TODO: CH4 estop PWM 동작 범위 확인
 TODO: AUTO mode 진입 조건 확정
 TODO: AUTO mode 해제 조건 확정
