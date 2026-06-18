@@ -33,12 +33,17 @@ class Pnt50DriverNode(Node):
         self.declare_parameter('drive_mode', 'differential')
 
         # 메카넘 바퀴별 방향 부호. 순서 [FL, FR, RL, RR].
-        # 기본값은 현재 잘 도는 차동 설정에서 역산한 값(전진 기준)이며,
-        # Step 2 하드웨어 테스트에서 바퀴별로 확정한다.
+        # Step 2 하드웨어 테스트(2026-06-18)에서 전진 기준으로 확정한 값.
         self.declare_parameter('front_left_sign', -1)
         self.declare_parameter('front_right_sign', 1)
-        self.declare_parameter('rear_left_sign', 1)
-        self.declare_parameter('rear_right_sign', -1)
+        self.declare_parameter('rear_left_sign', -1)
+        self.declare_parameter('rear_right_sign', 1)
+
+        # 드라이버 채널(motor1/motor2)이 좌/우 바퀴에 어떻게 붙었는지.
+        # 하드웨어 테스트 결과: 앞 드라이버는 motor1=FL, motor2=FR (정상),
+        # 뒤 드라이버는 motor1=RR, motor2=RL 로 좌우가 바뀌어 있음.
+        self.declare_parameter('swap_front_channels', False)
+        self.declare_parameter('swap_rear_channels', True)
 
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('send_rate', 20.0)
@@ -65,6 +70,9 @@ class Pnt50DriverNode(Node):
         self.front_right_sign = int(self.get_parameter('front_right_sign').value)
         self.rear_left_sign = int(self.get_parameter('rear_left_sign').value)
         self.rear_right_sign = int(self.get_parameter('rear_right_sign').value)
+
+        self.swap_front_channels = bool(self.get_parameter('swap_front_channels').value)
+        self.swap_rear_channels = bool(self.get_parameter('swap_rear_channels').value)
 
         # Front driver (2 motors) + rear driver (2 motors) on the same RS485 bus.
         # Each PNT50 controls a pair of motors, so 2 drivers = 4 wheels.
@@ -270,11 +278,16 @@ class Pnt50DriverNode(Node):
                 rl = int(self.last_rl_norm * self.max_rpm * self.rear_left_sign)
                 rr = int(self.last_rr_norm * self.max_rpm * self.rear_right_sign)
 
+            # 드라이버 채널 순서: 기본 (왼쪽, 오른쪽) = (motor1, motor2).
+            # 뒤 드라이버는 좌우가 반대로 결선돼 있어 swap_rear_channels=True.
+            front = (fr, fl) if self.swap_front_channels else (fl, fr)
+            rear = (rr, rl) if self.swap_rear_channels else (rl, rr)
+
             return [
                 (self.slave_id,
-                 self.clamp_int16(fl), self.clamp_int16(fr)),
+                 self.clamp_int16(front[0]), self.clamp_int16(front[1])),
                 (self.rear_slave_id,
-                 self.clamp_int16(rl), self.clamp_int16(rr)),
+                 self.clamp_int16(rear[0]), self.clamp_int16(rear[1])),
             ]
 
         motor1_rpm, motor2_rpm = self.get_target_rpms()
