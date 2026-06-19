@@ -8,7 +8,7 @@ pnt50_driver_node:
     slave_id: 1
     rear_slave_id: 2
 
-    max_rpm: 500
+    max_rpm: 2000
 
     left_is_motor1: true
     left_sign: -1
