@@ -10,7 +10,8 @@ rf_arduino_node:
 
     max_linear_velocity: 5.76
     max_lateral_velocity: 5.76
-    max_angular_velocity: 29.54
+    # 회전 톱스피드 ~= 전진의 절반(약 1000rpm). 0.485*6.0/5.76 ~= 0.5 norm.
+    max_angular_velocity: 6.0
 
     # CH7 모드 스위치. 아두이노 CSV 10번째 필드(ch7)가 들어오면 자동 판정.
     # CSV에 ch7이 없으면 default_drive_mode 사용(현재 9필드 = manual 유지).

@@ -8,7 +8,8 @@ cmd_vel_safety_node:
 
     max_linear_velocity: 5.76
     max_lateral_velocity: 5.76
-    max_angular_velocity: 29.54
+    # 회전 톱스피드 제한 (~1000rpm). 전진/평행이동(5.76)과 독립.
+    max_angular_velocity: 6.0
 
     max_linear_acceleration: 20.0
     max_angular_acceleration: 120.0
